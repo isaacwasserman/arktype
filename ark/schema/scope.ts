@@ -264,8 +264,8 @@ export abstract class BaseScope<$ extends {} = {}> {
 	readonly aliases: Record<string, unknown> = {}
 	protected resolved = false
 	readonly nodesByHash: WeakValueMap<string, BaseNode> = new WeakValueMap()
-	// the global registry holds parse contexts weakly, so the scope holds the
-	// contexts of its aliases until they are resolved
+	// the global registry holds alias contexts weakly, so the scope holds them
+	// until they are resolved
 	protected readonly aliasContexts: BaseParseContext[] = []
 	readonly intrinsic: Omit<typeof $ark.intrinsic, `json${string}`>
 
@@ -309,6 +309,8 @@ export abstract class BaseScope<$ extends {} = {}> {
 				else {
 					const ctx = this.createParseContext(preparsed)
 					this.aliasContexts.push(ctx)
+					// the scope holds the context, so the registry can hold it weakly
+					nodesByRegisteredId.set(ctx.id, ctx)
 					this.resolutions[name] = ctx.id
 				}
 			}
@@ -583,7 +585,7 @@ export abstract class BaseScope<$ extends {} = {}> {
 		input: input
 	): input & AttachedParseContext {
 		const id = input.id ?? registerNodeId(input.prefix)
-		return nodesByRegisteredId.set(
+		return nodesByRegisteredId.setStrong(
 			id,
 			Object.assign(input, {
 				[arkKind]: "context" as const,
@@ -691,7 +693,13 @@ export abstract class BaseScope<$ extends {} = {}> {
 
 		const ctx = this.createParseContext(ctxOrNode)
 
-		const node = parseNode(ctx)
+		let node: BaseNode
+		try {
+			node = parseNode(ctx)
+		} catch (e) {
+			if (!hasPreassignedId) nodesByRegisteredId.delete(ctx.id)
+			throw e
+		}
 
 		const bound = this.bindReference(node)
 
@@ -713,7 +721,13 @@ export abstract class BaseScope<$ extends {} = {}> {
 
 		const hasPreassignedId = ctxInputOrNode.id !== undefined
 		const ctx = this.createParseContext(ctxInputOrNode)
-		let node = this.bindReference(this.parseOwnDefinitionFormat(def, ctx))
+		let node: BaseRoot
+		try {
+			node = this.bindReference(this.parseOwnDefinitionFormat(def, ctx))
+		} catch (e) {
+			if (!hasPreassignedId) nodesByRegisteredId.delete(ctx.id)
+			throw e
+		}
 
 		// if the node is recursive e.g. { box: "this" }, we need to make sure it
 		// has the original id from context so that its references compile correctly

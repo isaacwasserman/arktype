@@ -212,6 +212,22 @@ contextualize(() => {
 			)
 		})
 
+		it("repeated parses in one synchronous job keep no memory", () => {
+			// a WeakRef keeps its target alive until the current job ends, so a
+			// short-lived parse context must not be held by a WeakRef
+			const heapUsed = () => process.memoryUsage().heapUsed
+			const repeat = () => {
+				for (let i = 0; i < 20_000; i++) type("string")
+			}
+			repeat()
+			gc()
+			const initial = heapUsed()
+			repeat()
+			gc()
+			// about 190 bytes per call (3.8 MB) when contexts are held weakly
+			attest(heapUsed() - initial < 1_000_000).equals(true)
+		})
+
 		it("types work after unused nodes are collected", async () => {
 			const Box = type({ box: "this | undefined" })
 			const Both = Box.and({ other: "this | undefined" })

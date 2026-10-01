@@ -137,9 +137,10 @@ export type NodeId = Brand<string, "NodeId">
 
 export type NodeResolver = (id: NodeId) => BaseNode
 
-// values are held weakly, so a node can be garbage collected when nothing else
-// uses it. a parse context is held by its parse (or by its scope, for a scope
-// alias) until its node replaces it.
+// nodes are held weakly, so a node can be garbage collected when nothing else
+// uses it. a parse context is held strongly until its parse replaces or
+// releases it. the context of a scope alias is held weakly, because its scope
+// holds it until it is resolved.
 export const nodesByRegisteredId: WeakValueMap<
 	NodeId,
 	BaseNode | BaseParseContext

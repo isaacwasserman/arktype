@@ -60,6 +60,18 @@ export class WeakValueMap<k, v> {
 		return v
 	}
 
+	/**
+	 * Hold a value strongly until the key is set again or deleted. Use this for
+	 * a short-lived value: a WeakRef keeps its target alive until the end of
+	 * the current job, so many weak entries made in one synchronous loop would
+	 * all stay in memory until the loop ends.
+	 */
+	setStrong<value extends v>(k: k, v: value): value {
+		this.weakEntries.delete(k)
+		this.strongEntries.set(k, v)
+		return v
+	}
+
 	delete(k: k): boolean {
 		const deletedWeak = this.weakEntries.delete(k)
 		return this.strongEntries.delete(k) || deletedWeak
