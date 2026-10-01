@@ -4,6 +4,7 @@ import {
 	printable,
 	throwInternalError,
 	throwParseError,
+	WeakValueMap,
 	type array,
 	type mutable,
 	type satisfy
@@ -592,7 +593,7 @@ export class SequenceNode extends BaseConstraint<Sequence.Declaration> {
 	}
 }
 
-const defaultableMorphsCache: Record<string, Morph[] | undefined> = {}
+const defaultableMorphsCache = new WeakValueMap<string, Morph[]>()
 
 const getDefaultableMorphs = (node: Sequence.Node): Morph[] => {
 	if (!node.defaultables) return []
@@ -610,7 +611,10 @@ const getDefaultableMorphs = (node: Sequence.Node): Morph[] => {
 
 	cacheKey += "]"
 
-	return (defaultableMorphsCache[cacheKey] ??= morphs)
+	return (
+		defaultableMorphsCache.get(cacheKey) ??
+		defaultableMorphsCache.set(cacheKey, morphs)
+	)
 }
 
 export const Sequence = {

@@ -9,6 +9,7 @@ import {
 	throwInternalError,
 	throwParseError,
 	unset,
+	WeakValueMap,
 	type Brand,
 	type dict,
 	type Json,
@@ -136,10 +137,14 @@ export type NodeId = Brand<string, "NodeId">
 
 export type NodeResolver = (id: NodeId) => BaseNode
 
-export const nodesByRegisteredId: Record<
+// nodes are held weakly, so a node can be garbage collected when nothing else
+// uses it. a parse context is held strongly until its parse replaces or
+// releases it. the context of a scope alias is held weakly, because its scope
+// holds it until it is resolved.
+export const nodesByRegisteredId: WeakValueMap<
 	NodeId,
-	BaseNode | BaseParseContext | undefined
-> = {}
+	BaseNode | BaseParseContext
+> = new WeakValueMap()
 
 $ark.nodesByRegisteredId = nodesByRegisteredId
 
@@ -278,7 +283,10 @@ export const createNode = ({
 
 	// we have to wait until after reduction to return a cached entry,
 	// since reduction can add impliedSiblings
-	if ($.nodesByHash[hash] && !ignoreCache) return $.nodesByHash[hash]
+	if (!ignoreCache) {
+		const cached = $.nodesByHash.get(hash)
+		if (cached) return cached
+	}
 
 	const attachments: UnknownAttachments & dict = {
 		id,
@@ -303,12 +311,12 @@ export const createNode = ({
 
 	const node: BaseNode = new nodeClassesByKind[kind](attachments as never, $)
 
-	return ($.nodesByHash[hash] = node)
+	return $.nodesByHash.set(hash, node)
 }
 
 export const withId = <node extends BaseNode>(node: node, id: NodeId): node => {
 	if (node.id === id) return node
-	if (isNode(nodesByRegisteredId[id]))
+	if (isNode(nodesByRegisteredId.get(id)))
 		throwInternalError(`Unexpected attempt to overwrite node id ${id}`)
 	// have to ignore cache to force creation of new potentially cyclic id
 	return createNode({
@@ -326,7 +334,7 @@ export const withMeta = <node extends BaseNode>(
 	meta: ArkEnv.meta,
 	id?: NodeId
 ): node => {
-	if (id && isNode(nodesByRegisteredId[id]))
+	if (id && isNode(nodesByRegisteredId.get(id)))
 		throwInternalError(`Unexpected attempt to overwrite node id ${id}`)
 	return createNode({
 		id: id ?? registerNodeId(meta.alias ?? node.kind),

@@ -105,7 +105,7 @@ export class AliasNode extends BaseRoot<Alias.Declaration> {
 
 	get resolution(): BaseRoot {
 		const result = this._resolve()
-		return (nodesByRegisteredId[this.id] = result)
+		return nodesByRegisteredId.set(this.id, result)
 	}
 
 	protected _resolve(): BaseRoot {
@@ -115,7 +115,7 @@ export class AliasNode extends BaseRoot<Alias.Declaration> {
 
 		const id = this.reference as NodeId
 
-		let resolution = nodesByRegisteredId[id]
+		let resolution = nodesByRegisteredId.get(id)
 		const seen: NodeId[] = []
 		while (hasArkKind(resolution, "context")) {
 			if (seen.includes(resolution.id)) {
@@ -125,7 +125,7 @@ export class AliasNode extends BaseRoot<Alias.Declaration> {
 			}
 
 			seen.push(resolution.id)
-			resolution = nodesByRegisteredId[resolution.id]
+			resolution = nodesByRegisteredId.get(resolution.id)
 		}
 		if (!hasArkKind(resolution, "root")) {
 			return throwInternalError(`Unexpected resolution for reference ${this.reference}

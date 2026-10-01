@@ -7,6 +7,7 @@ import {
 	printable,
 	throwInternalError,
 	throwParseError,
+	WeakValueMap,
 	type Dict,
 	type Fn,
 	type Hkt,
@@ -262,7 +263,10 @@ export abstract class BaseScope<$ extends {} = {}> {
 	exportedNames: string[] = []
 	readonly aliases: Record<string, unknown> = {}
 	protected resolved = false
-	readonly nodesByHash: Record<string, BaseNode> = {}
+	readonly nodesByHash: WeakValueMap<string, BaseNode> = new WeakValueMap()
+	// the global registry holds alias contexts weakly, so the scope holds them
+	// until they are resolved
+	protected readonly aliasContexts: BaseParseContext[] = []
 	readonly intrinsic: Omit<typeof $ark.intrinsic, `json${string}`>
 
 	constructor(
@@ -300,10 +304,15 @@ export abstract class BaseScope<$ extends {} = {}> {
 				!isThunk(v)
 			) {
 				const preparsed = this.preparseOwnDefinitionFormat(v, { alias: name })
-				this.resolutions[name] =
-					hasArkKind(preparsed, "root") ?
-						this.bindReference(preparsed)
-					:	this.createParseContext(preparsed).id
+				if (hasArkKind(preparsed, "root"))
+					this.resolutions[name] = this.bindReference(preparsed)
+				else {
+					const ctx = this.createParseContext(preparsed)
+					this.aliasContexts.push(ctx)
+					// the scope holds the context, so the registry can hold it weakly
+					nodesByRegisteredId.set(ctx.id, ctx)
+					this.resolutions[name] = ctx.id
+				}
 			}
 		}
 
@@ -326,10 +335,9 @@ export abstract class BaseScope<$ extends {} = {}> {
 			{ prereduced: true }
 		)
 
-		this.nodesByHash[rawUnknownUnion.hash] = this.node(
-			"intersection",
-			{},
-			{ prereduced: true }
+		this.nodesByHash.set(
+			rawUnknownUnion.hash,
+			this.node("intersection", {}, { prereduced: true })
 		)
 
 		this.intrinsic =
@@ -393,11 +401,14 @@ export abstract class BaseScope<$ extends {} = {}> {
 
 	protected lazyResolutions: Alias.Node[] = []
 	lazilyResolve(resolve: () => BaseRoot, syntheticAlias?: string): Alias.Node {
+		// the result must not change after it is resolved, because compiled code
+		// refers to its id. caches can't keep it the same because they are weak.
+		let resolution: BaseRoot | undefined
 		const node = this.node(
 			"alias",
 			{
 				reference: syntheticAlias ?? "synthetic",
-				resolve
+				resolve: () => (resolution ??= resolve())
 			},
 			{ prereduced: true }
 		)
@@ -525,7 +536,7 @@ export abstract class BaseScope<$ extends {} = {}> {
 		if (cached) {
 			if (typeof cached !== "string") return this.bindReference(cached)
 
-			const v = nodesByRegisteredId[cached]
+			const v = nodesByRegisteredId.get(cached as NodeId)
 			if (hasArkKind(v, "root")) return (this.resolutions[name] = v)
 			if (hasArkKind(v, "context")) {
 				if (v.phase === "resolving") {
@@ -543,8 +554,8 @@ export abstract class BaseScope<$ extends {} = {}> {
 				v.phase = "resolving"
 				const node = this.bindReference(this.parseOwnDefinitionFormat(v.def, v))
 				v.phase = "resolved"
-				nodesByRegisteredId[node.id] = node
-				nodesByRegisteredId[v.id] = node
+				nodesByRegisteredId.set(node.id, node)
+				nodesByRegisteredId.set(v.id, node)
 				return (this.resolutions[name] = node)
 			}
 			return throwInternalError(
@@ -574,12 +585,15 @@ export abstract class BaseScope<$ extends {} = {}> {
 		input: input
 	): input & AttachedParseContext {
 		const id = input.id ?? registerNodeId(input.prefix)
-		return (nodesByRegisteredId[id] = Object.assign(input, {
-			[arkKind]: "context" as const,
-			$: this as never,
+		return nodesByRegisteredId.setStrong(
 			id,
-			phase: "unresolved" as const
-		}))
+			Object.assign(input, {
+				[arkKind]: "context" as const,
+				$: this as never,
+				id,
+				phase: "unresolved" as const
+			})
+		) as never
 	}
 
 	traversal(root: unknown): Traversal {
@@ -679,12 +693,18 @@ export abstract class BaseScope<$ extends {} = {}> {
 
 		const ctx = this.createParseContext(ctxOrNode)
 
-		const node = parseNode(ctx)
+		let node: BaseNode
+		try {
+			node = parseNode(ctx)
+		} catch (e) {
+			if (!hasPreassignedId) nodesByRegisteredId.delete(ctx.id)
+			throw e
+		}
 
 		const bound = this.bindReference(node)
 
 		if (!hasPreassignedId) releaseUnusedContextId(ctx.id, bound)
-		else nodesByRegisteredId[ctx.id] = bound
+		else nodesByRegisteredId.set(ctx.id, bound)
 
 		return bound as never
 	}
@@ -701,14 +721,20 @@ export abstract class BaseScope<$ extends {} = {}> {
 
 		const hasPreassignedId = ctxInputOrNode.id !== undefined
 		const ctx = this.createParseContext(ctxInputOrNode)
-		let node = this.bindReference(this.parseOwnDefinitionFormat(def, ctx))
+		let node: BaseRoot
+		try {
+			node = this.bindReference(this.parseOwnDefinitionFormat(def, ctx))
+		} catch (e) {
+			if (!hasPreassignedId) nodesByRegisteredId.delete(ctx.id)
+			throw e
+		}
 
 		// if the node is recursive e.g. { box: "this" }, we need to make sure it
 		// has the original id from context so that its references compile correctly
 		if (node.isCyclic) node = withId(node, ctx.id)
 
 		if (!hasPreassignedId) releaseUnusedContextId(ctx.id, node)
-		else nodesByRegisteredId[ctx.id] = node
+		else nodesByRegisteredId.set(ctx.id, node)
 
 		return node
 	}
@@ -766,8 +792,8 @@ export class SchemaScope<$ extends {} = {}> extends BaseScope<$> {
 // node came from a cache), no node can refer to the id. remove it, so that the
 // global registry does not grow each time an equivalent type is parsed.
 const releaseUnusedContextId = (id: NodeId, node: BaseNode) => {
-	if (node.id === id) nodesByRegisteredId[id] = node
-	else delete nodesByRegisteredId[id]
+	if (node.id === id) nodesByRegisteredId.set(id, node)
+	else nodesByRegisteredId.delete(id)
 }
 
 // scope aliases are `$name` references, so can be skipped without a lookup
@@ -776,7 +802,7 @@ const hasUnresolvedContextAlias = (node: BaseRoot): boolean =>
 		ref =>
 			ref.hasKind("alias") &&
 			ref.reference[0] !== "$" &&
-			hasArkKind(nodesByRegisteredId[ref.reference as NodeId], "context")
+			hasArkKind(nodesByRegisteredId.get(ref.reference as NodeId), "context")
 	)
 
 const bootstrapAliasReferences = (resolution: BaseRoot | GenericRoot) => {

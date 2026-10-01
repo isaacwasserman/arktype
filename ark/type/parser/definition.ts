@@ -13,6 +13,7 @@ import {
 	printable,
 	throwParseError,
 	uncapitalize,
+	WeakValueMap,
 	type anyOrNever,
 	type array,
 	type Dict,
@@ -53,7 +54,10 @@ import {
 	type validateTupleLiteral
 } from "./tupleLiteral.ts"
 
-const parseCache = new WeakMap<BaseScope, Record<string, InnerParseResult>>()
+const parseCache = new WeakMap<
+	BaseScope,
+	WeakValueMap<string, InnerParseResult>
+>()
 
 export const parseInnerDefinition = (
 	def: unknown,
@@ -67,10 +71,10 @@ export const parseInnerDefinition = (
 		}
 		let scopeCache = parseCache.get(ctx.$)
 		if (!scopeCache) {
-			scopeCache = {}
+			scopeCache = new WeakValueMap()
 			parseCache.set(ctx.$, scopeCache)
 		}
-		return (scopeCache[def] ??= parseString(def, ctx))
+		return scopeCache.get(def) ?? scopeCache.set(def, parseString(def, ctx))
 	}
 	return hasDomain(def, "object") ?
 			parseObject(def, ctx)

@@ -2,6 +2,7 @@ import {
 	$ark,
 	BaseScope,
 	hasArkKind,
+	nodesByRegisteredId,
 	parseGeneric,
 	type AliasDefEntry,
 	type ArkSchemaRegistry,
@@ -256,15 +257,17 @@ export class InternalScope<$ extends {} = {}> extends BaseScope<$> {
 		def: string,
 		opts: BaseParseOptions
 	): array<GenericParamDef> {
-		return parseGenericParamName(
-			new Scanner(def),
-			[],
-			this.createParseContext({
-				...opts,
-				def,
-				prefix: "generic"
-			})
-		)
+		const ctx = this.createParseContext({
+			...opts,
+			def,
+			prefix: "generic"
+		})
+		try {
+			return parseGenericParamName(new Scanner(def), [], ctx)
+		} finally {
+			// no node replaces this context, so release it when the params are parsed
+			nodesByRegisteredId.delete(ctx.id)
+		}
 	}
 
 	protected normalizeRootScopeValue(resolution: unknown): unknown {

@@ -3,12 +3,14 @@ import {
 	DynamicFunction,
 	hasDomain,
 	isDotAccessible,
+	registry,
+	resolveRegistered,
 	serializePrimitive,
 	type Fn
 } from "@ark/util"
 import type { BaseNode } from "../node.ts"
 import type { NodeId } from "../parse.ts"
-import { registeredReference } from "./registry.ts"
+import { registeredReference, registryName } from "./registry.ts"
 import type { TraversalKind } from "./traversal.ts"
 
 export type CoercibleValue = string | number | boolean | null | undefined
@@ -122,8 +124,36 @@ export class CompiledFunction<
 	}
 
 	compile(): compiledSignature {
-		return new DynamicFunction(...this.argNames, this.body) as never
+		// the registry name is the first parameter, so it hides the global
+		// registry. the compiled function then holds only the registered values
+		// it uses, and they can be garbage collected together with it.
+		// note: the result is bound, so `this` in its body is undefined.
+		const fn = new DynamicFunction<
+			(references: object, ...args: never[]) => unknown
+		>(registryName, ...this.argNames, this.body)
+		return fn.bind(undefined, registeredReferencesOf(this.body)) as never
 	}
+}
+
+const registeredReferencePattern = new RegExp(
+	`${registryName.replace("$", "\\$")}\\.([$\\w]+)`,
+	"g"
+)
+
+const hasOwnProperty = Object.prototype.hasOwnProperty
+
+const registeredReferencesOf = (body: string): object => {
+	// names that are not found (e.g. intrinsic) come from the global registry
+	const references: Record<string, unknown> = Object.create(registry)
+	registeredReferencePattern.lastIndex = 0
+	let match: RegExpExecArray | null
+	while ((match = registeredReferencePattern.exec(body))) {
+		const name = match[1]!
+		if (hasOwnProperty.call(references, name)) continue
+		const value = resolveRegistered(name)
+		if (value !== undefined) references[name] = value
+	}
+	return references
 }
 
 export const compileSerializedValue = (value: unknown): string =>
