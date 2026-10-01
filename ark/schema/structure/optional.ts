@@ -4,6 +4,7 @@ import {
 	omit,
 	printable,
 	throwParseError,
+	WeakValueMap,
 	type requireKeys
 } from "@ark/util"
 import { intrinsic } from "../intrinsic.ts"
@@ -129,18 +130,20 @@ export const Optional = {
 	Node: OptionalNode
 }
 
-const defaultableMorphCache: Record<string, Morph | undefined> = {}
+const defaultableMorphCache = new WeakValueMap<string, Morph>()
 
 const getDefaultableMorph = (node: Optional.Node): Morph | undefined => {
 	if (!node.hasDefault()) return
 
 	const cacheKey = `{${node.compiledKey}: ${node.value.id} = ${defaultValueSerializer(node.default)}}`
 
-	return (defaultableMorphCache[cacheKey] ??= computeDefaultValueMorph(
-		node.key,
-		node.value,
-		node.default
-	))
+	return (
+		defaultableMorphCache.get(cacheKey) ??
+		defaultableMorphCache.set(
+			cacheKey,
+			computeDefaultValueMorph(node.key, node.value, node.default)
+		)
+	)
 }
 
 export const computeDefaultValueMorph = (

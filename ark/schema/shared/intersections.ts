@@ -1,4 +1,4 @@
-import type { PartialRecord, TypeGuard } from "@ark/util"
+import type { TypeGuard } from "@ark/util"
 import type { mutableNormalizedRootOfKind, nodeOfKind } from "../kinds.ts"
 import type { BaseNode } from "../node.ts"
 import type { Morph } from "../roots/morph.ts"
@@ -14,7 +14,37 @@ import {
 } from "./implement.ts"
 import { isNode } from "./utils.ts"
 
-const intersectionCache: PartialRecord<string, UnknownIntersectionResult> = {}
+// results are cached for each pair of operands. the cache holds them weakly, so
+// an entry is removed when either operand is garbage collected. each operand is
+// keyed by its attachments, which are the same for each scope it is bound to.
+type IntersectionCache = WeakMap<
+	object,
+	WeakMap<object, UnknownIntersectionResult>
+>
+
+const intersectionCache: IntersectionCache = new WeakMap()
+const pipeCache: IntersectionCache = new WeakMap()
+
+const getCached = (
+	cache: IntersectionCache,
+	l: BaseNode,
+	r: BaseNode
+): UnknownIntersectionResult | undefined =>
+	cache.get(l.attachments)?.get(r.attachments)
+
+const setCached = (
+	cache: IntersectionCache,
+	l: BaseNode,
+	r: BaseNode,
+	result: UnknownIntersectionResult
+): void => {
+	let resultsByR = cache.get(l.attachments)
+	if (!resultsByR) {
+		resultsByR = new WeakMap()
+		cache.set(l.attachments, resultsByR)
+	}
+	resultsByR.set(r.attachments, result)
+}
 
 type InternalNodeIntersection<ctx> = <l extends BaseNode, r extends BaseNode>(
 	l: l,
@@ -47,22 +77,20 @@ export const intersectOrPipeNodes: InternalNodeIntersection<IntersectionContext>
 		r: BaseNode,
 		ctx: IntersectionContext
 	): BaseNode | Disjoint | null => {
-		const operator = ctx.pipe ? "|>" : "&"
-		const lrCacheKey = `${l.hash}${operator}${r.hash}`
-		if (intersectionCache[lrCacheKey] !== undefined)
-			return intersectionCache[lrCacheKey]! as never
+		const cache = ctx.pipe ? pipeCache : intersectionCache
+		const lrResult = getCached(cache, l, r)
+		if (lrResult !== undefined) return lrResult as never
 
 		if (!ctx.pipe) {
 			// we can only use this for the commutative & operator
-			const rlCacheKey = `${r.hash}${operator}${l.hash}`
-			if (intersectionCache[rlCacheKey] !== undefined) {
+			const rlResult = getCached(cache, r, l)
+			if (rlResult !== undefined) {
 				// if the cached result was a Disjoint and the operands originally
 				// appeared in the opposite order, we need to invert it to match
-				const rlResult = intersectionCache[rlCacheKey]!
 				const lrResult =
 					rlResult instanceof Disjoint ? rlResult.invert() : rlResult
 				// add the lr result to the cache directly to bypass this check in the future
-				intersectionCache[lrCacheKey] = lrResult
+				setCached(cache, l, r, lrResult)
 				return lrResult
 			}
 		}
@@ -86,7 +114,7 @@ export const intersectOrPipeNodes: InternalNodeIntersection<IntersectionContext>
 			else if (r.equals(result)) result = r
 		}
 
-		intersectionCache[lrCacheKey] = result
+		setCached(cache, l, r, result)
 		return result as never
 	}) as never
 
